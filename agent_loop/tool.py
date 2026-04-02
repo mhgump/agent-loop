@@ -8,8 +8,11 @@ class Tool(ABC):
     """Anthropic tool definition JSON (name, description, input_schema)."""
 
     @abstractmethod
-    def call(self, **kwargs) -> dict:
+    def call(self, input: dict) -> dict:
         """Execute the tool.
+
+        Args:
+            input: Tool inputs as a dict matching the input_schema defined in spec.
 
         Returns a JSON-serialisable dict that MUST contain an 'errors' field:
           - None  when the tool succeeded

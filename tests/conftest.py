@@ -87,7 +87,7 @@ class MockTool(Tool):
         },
     }
 
-    def call(self, **kwargs) -> dict:
+    def call(self, input: dict) -> dict:
         return {"result": "executed", "errors": None}
 
 
@@ -97,7 +97,7 @@ class MockTask(Task):
     PROGRESS_SYSTEM_PROMPT = "You are a helpful assistant."
     METADATA_SYSTEM_PROMPT = "Evaluate whether the task is complete."
 
-    def produce_artifact(self, tool_results: list[dict]):
+    def produce_artifact(self, task_inputs: dict, tool_results: list[dict]):
         return {"status": "complete", "tool_count": len(tool_results)}
 
 
@@ -107,5 +107,5 @@ class MockFailingTask(Task):
     PROGRESS_SYSTEM_PROMPT = "You are a helpful assistant."
     METADATA_SYSTEM_PROMPT = "Evaluate whether the task is complete."
 
-    def produce_artifact(self, tool_results: list[dict]):
+    def produce_artifact(self, task_inputs: dict, tool_results: list[dict]):
         raise RuntimeError("This task always fails")

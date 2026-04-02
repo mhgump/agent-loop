@@ -23,7 +23,7 @@ The framework automatically loads this file when using the default client.
 | Concept | Role |
 |---|---|
 | `Tool` | A capability the LLM can call. Returns JSON with an `errors` field. |
-| `Task` | Defines the goal: prompt template, stopping criteria, system prompts, and artifact production logic. |
+| `Task` | Defines the goal: prompt template, stopping criteria, system prompts, artifact production logic, and optional side effects. |
 | `AgentLoopConfig` | Configures models, retry limits, and acceptance policy. |
 | `AgentLoop` | Orchestrates the loop: progress → tools → artifact → metadata → repeat. |
 
@@ -56,9 +56,9 @@ class GetWeatherTool(Tool):
         }
     }
 
-    def call(self, location: str, unit: str = "celsius") -> dict:
+    def call(self, input: dict) -> dict:
         # Your implementation here
-        data = fetch_weather_api(location, unit)
+        data = fetch_weather_api(input["location"], input.get("unit", "celsius"))
         return {
             "temperature": data["temp"],
             "condition": data["condition"],
@@ -79,7 +79,12 @@ The framework uses this field to evaluate whether `accept_attempts_if_no_error` 
 
 ## Defining a Task
 
-Subclass `Task` and define four class-level string constants plus `produce_artifact()`.
+Each task serves two purposes:
+
+1. **Produce an artifact** — `produce_artifact()` assembles the final result from tool call outputs. The framework calls this after every turn; raising an exception marks the attempt as failed and triggers a retry.
+2. **Apply side effects** — `side_effects()` is called exactly once after `produce_artifact()` returns without error and the attempt is accepted. Override it to persist the artifact, send notifications, write files, etc. The default implementation does nothing.
+
+Subclass `Task` and define four class-level string constants plus `produce_artifact()`. Optionally override `side_effects()`.
 
 ```python
 from agent_loop import Task
@@ -104,8 +109,11 @@ class WeatherReportTask(Task):
         "Respond with JSON: {\"progress\": \"<what has been done>\", \"success\": true/false}."
     )
 
-    def produce_artifact(self, tool_results: list[dict]):
-        """Build the final artifact from all tool results collected this attempt.
+    def produce_artifact(self, task_inputs: dict, tool_results: list[dict]):
+        """Build the final artifact from task inputs and tool results.
+
+        task_inputs holds the dict passed to the constructor (e.g. city_a, city_b here),
+        so the artifact can reference the original task parameters programmatically.
 
         Raise an exception if the artifact cannot be produced — the framework
         will treat this as a failed attempt and retry.
@@ -114,9 +122,14 @@ class WeatherReportTask(Task):
         if len(weather_data) < 2:
             raise ValueError("Need weather data for at least two cities")
         return {
+            "cities": [task_inputs["city_a"], task_inputs["city_b"]],
             "report": f"Comparison: {weather_data[0]} vs {weather_data[1]}",
             "cities_compared": len(weather_data),
         }
+
+    def side_effects(self, artifact) -> None:
+        """Called once after the artifact is accepted. Optional — default does nothing."""
+        save_report_to_database(artifact)
 ```
 
 ### Instantiating a Task
@@ -208,17 +221,21 @@ artifact = loop.run(
 ```
 for each attempt (up to max_attempts):
     for each turn (up to max_turns):
-        1. Progress step  — LLM receives task prompt + conversation history,
-                            returns a set of tool calls
-        2. Execute tools  — all tool calls are run; results collected
-        3. Produce artifact — Task.produce_artifact(all_tool_results) is called
-        4. Metadata step  — separate LLM call evaluates {progress, success}
-                            given the task, stopping criteria, and current artifact
-        5. If metadata returns success: true → accept attempt, return artifact
+        1. Progress step    — LLM receives task prompt + conversation history,
+                              returns a set of tool calls
+        2. Execute tools    — all tool calls are run; results collected
+        3. Produce artifact — Task.produce_artifact(task_inputs, all_tool_results) is called
+        4. Metadata step    — separate LLM call evaluates {progress, success}
+                              given the task, stopping criteria, and current artifact
+        5. If metadata returns success: true → accept attempt
+                              → Task.side_effects(artifact) called once
+                              → return artifact
 
     After max_turns exhausted (without success):
         - if Task raised → attempt fails (no artifact)
         - if accept_attempts_if_no_error and all tools error-free → accept
+                              → Task.side_effects(artifact) called once
+                              → return artifact
         - otherwise → attempt fails, retry outer loop
 
 return artifact, or None if all attempts failed
@@ -262,9 +279,9 @@ class SearchTool(Tool):
         },
     }
 
-    def call(self, query: str) -> dict:
+    def call(self, input: dict) -> dict:
         # Replace with a real search implementation
-        return {"results": [f"Result for: {query}"], "errors": None}
+        return {"results": [f"Result for: {input['query']}"], "errors": None}
 
 
 class ResearchTask(Task):
@@ -276,11 +293,11 @@ class ResearchTask(Task):
         'Respond with JSON only: {"progress": "...", "success": true/false}'
     )
 
-    def produce_artifact(self, tool_results: list[dict]) -> dict:
+    def produce_artifact(self, task_inputs: dict, tool_results: list[dict]) -> dict:
         results = [r["results"] for r in tool_results if r.get("errors") is None]
         if not results:
             raise ValueError("No search results collected")
-        return {"summary": results, "sources_checked": len(results)}
+        return {"topic": task_inputs["topic"], "summary": results, "sources_checked": len(results)}
 
 
 if __name__ == "__main__":
@@ -321,7 +338,7 @@ pytest
 |---|---|
 | `MockMetadataResponse(bools)` | Returns `success` values from the provided list in order |
 | `MockProgressResponse(tool_name)` | Always returns one tool call for `tool_name` with sequential inputs |
-| `MockTask` | `produce_artifact` returns `{"status": "complete", "tool_count": N}` |
+| `MockTask` | `produce_artifact` returns `{"status": "complete", "tool_count": N}`; `side_effects` is a no-op |
 | `MockFailingTask` | `produce_artifact` always raises `RuntimeError` |
-| `MockTool` | `call()` always returns `{"result": "executed", "errors": None}` |
+| `MockTool` | `call(input)` always returns `{"result": "executed", "errors": None}` |
 | `MockClient` | Routes calls to `MockProgressResponse` (when tools present) or `MockMetadataResponse` |

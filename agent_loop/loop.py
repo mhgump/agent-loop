@@ -95,7 +95,7 @@ class AgentLoop:
                 result = {"errors": f"Unknown tool: {name}"}
             else:
                 try:
-                    result = self.tools[name].call(**inputs)
+                    result = self.tools[name].call(inputs)
                 except Exception as exc:
                     result = {"errors": str(exc)}
 
@@ -160,7 +160,9 @@ class AgentLoop:
 
                 # Produce artifact
                 try:
-                    artifact = self.task.produce_artifact(list(all_tool_results))
+                    artifact = self.task.produce_artifact(
+                        self.task.prompt_fields, list(all_tool_results)
+                    )
                 except Exception:
                     artifact = None
 
@@ -203,11 +205,13 @@ class AgentLoop:
             if attempt_success:
                 if on_attempt is not None:
                     on_attempt(True, artifact)
+                self.task.side_effects(artifact)
                 return artifact
 
             if self.config.accept_attempts_if_no_error and all_no_errors:
                 if on_attempt is not None:
                     on_attempt(True, artifact)
+                self.task.side_effects(artifact)
                 return artifact
 
             if on_attempt is not None:

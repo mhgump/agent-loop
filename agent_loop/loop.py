@@ -1,5 +1,6 @@
 import json
 import re
+import traceback
 from typing import Any, Callable, Optional
 
 from .config import AgentLoopConfig
@@ -47,6 +48,8 @@ class AgentLoop:
         self.task = task
         self.tools = {t.name: t for t in tools}
         self.config = config
+        self._last_turn_tool_errors: list[dict] = []
+        self._produce_artifact_error: Optional[str] = None
 
     def _progress_step(self, messages: list[dict]) -> Any:
         return self.config.client.messages.create(
@@ -124,6 +127,9 @@ class AgentLoop:
         Returns:
             The final artifact produced by the task, or None if all attempts failed.
         """
+        self._last_turn_tool_errors = []
+        self._produce_artifact_error = None
+
         for _attempt in range(self.config.max_attempts):
             messages = [{"role": "user", "content": self.task.get_prompt()}]
             all_tool_results: list[dict] = []
@@ -157,13 +163,18 @@ class AgentLoop:
                 # Execute tools
                 api_results, return_values = self._execute_tools(tool_uses)
                 all_tool_results.extend(return_values)
+                self._last_turn_tool_errors = [
+                    r for r in return_values if r.get("errors") is not None
+                ]
 
                 # Produce artifact
                 try:
                     artifact = self.task.produce_artifact(
                         self.task.prompt_fields, list(all_tool_results)
                     )
+                    self._produce_artifact_error = None
                 except Exception:
+                    self._produce_artifact_error = traceback.format_exc()
                     artifact = None
 
                 # Metadata step
@@ -218,3 +229,20 @@ class AgentLoop:
                 on_attempt(False, artifact)
 
         return None
+
+    def last_turn_tool_errors(self) -> list[dict]:
+        """Return tool call results that contained errors from the most recent turn.
+
+        Each entry is a dict with at least an ``"errors"`` key containing the error
+        string. Returns an empty list if the last turn had no errors or ``run()``
+        has not been called yet.
+        """
+        return list(self._last_turn_tool_errors)
+
+    def produce_artifact_error(self) -> Optional[str]:
+        """Return the traceback string from the most recent ``produce_artifact`` failure.
+
+        Returns ``None`` if the last call to ``produce_artifact`` succeeded or
+        ``run()`` has not been called yet.
+        """
+        return self._produce_artifact_error

@@ -6,8 +6,9 @@ class Task(ABC):
 
     Each task serves two purposes:
     1. **Produce an artifact** — `produce_artifact()` assembles the final result from tool
-       call outputs. The framework calls this after every turn; raising an exception marks
-       the attempt as failed and triggers a retry.
+       call outputs. The framework calls this after every turn; returning ``None`` or raising
+       an exception causes the attempt to be treated as failed. Exceptions are caught
+       silently — retrieve the traceback via ``AgentLoop.produce_artifact_error()``.
     2. **Apply side effects** — `side_effects()` is called once after `produce_artifact()`
        returns without error and the attempt is accepted. Override it to persist the artifact,
        send notifications, or take any other action that should happen exactly once on success.
@@ -48,11 +49,10 @@ class Task(ABC):
             tool_results: All dicts returned by tool calls so far in this attempt.
 
         Returns:
-            The final artifact (any JSON-serialisable value).
-
-        Raises:
-            Exception: If the artifact cannot be produced. The framework treats any
-                       exception here as a failed attempt and retries.
+            The final artifact (any JSON-serialisable value), or ``None`` to signal
+            that the artifact could not be produced. Any exception raised here is
+            caught by the framework, treated as a ``None`` return, and stored
+            internally — retrieve it via ``AgentLoop.produce_artifact_error()``.
         """
 
     def side_effects(self, artifact) -> None:

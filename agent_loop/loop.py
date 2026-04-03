@@ -61,7 +61,7 @@ class AgentLoop:
             messages=messages,
         )
 
-    def _metadata_step(self, artifact) -> dict:
+    def _metadata_step(self, artifact, tool_results: list[dict] | None = None) -> dict:
         if artifact is not None:
             try:
                 artifact_str = json.dumps(artifact, indent=2)
@@ -70,9 +70,19 @@ class AgentLoop:
         else:
             artifact_str = "No artifact produced."
 
+        if tool_results:
+            try:
+                tool_results_str = json.dumps(tool_results, indent=2)
+            except (TypeError, ValueError):
+                tool_results_str = str(tool_results)
+            tool_section = f"Tool results:\n{tool_results_str}\n\n"
+        else:
+            tool_section = ""
+
         user_msg = (
             f"Task: {self.task.get_prompt()}\n\n"
             f"Stopping criteria: {self.task.STOPPING_CRITERIA}\n\n"
+            f"{tool_section}"
             f"Current artifact:\n{artifact_str}"
         )
         response = self.config.client.messages.create(
@@ -180,7 +190,7 @@ class AgentLoop:
                     artifact = None
 
                 # Metadata step
-                metadata = self._metadata_step(artifact)
+                metadata = self._metadata_step(artifact, list(all_tool_results))
                 self._last_metadata = metadata
 
                 if on_metadata is not None:

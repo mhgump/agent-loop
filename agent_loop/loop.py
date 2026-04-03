@@ -50,6 +50,7 @@ class AgentLoop:
         self.config = config
         self._last_turn_tool_errors: list[dict] = []
         self._produce_artifact_error: Optional[str] = None
+        self._last_metadata: Optional[dict] = None
 
     def _progress_step(self, messages: list[dict]) -> Any:
         return self.config.client.messages.create(
@@ -129,6 +130,7 @@ class AgentLoop:
         """
         self._last_turn_tool_errors = []
         self._produce_artifact_error = None
+        self._last_metadata = None
 
         for _attempt in range(self.config.max_attempts):
             messages = [{"role": "user", "content": self.task.get_prompt()}]
@@ -179,6 +181,7 @@ class AgentLoop:
 
                 # Metadata step
                 metadata = self._metadata_step(artifact)
+                self._last_metadata = metadata
 
                 if on_metadata is not None:
                     on_metadata(metadata)
@@ -246,3 +249,11 @@ class AgentLoop:
         ``run()`` has not been called yet.
         """
         return self._produce_artifact_error
+
+    def last_metadata(self) -> Optional[dict]:
+        """Return the metadata dict from the most recent metadata step.
+
+        Returns ``None`` if ``run()`` has not been called yet or no metadata step
+        has completed.
+        """
+        return self._last_metadata

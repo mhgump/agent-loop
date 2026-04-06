@@ -57,7 +57,7 @@ class MockMetadataResponse:
         )
         self._call_count += 1
         return MockResponse(content=[
-            MockTextBlock(json.dumps({"progress": "In progress.", "success": success}))
+            MockTextBlock(json.dumps({"progress": "In progress.", "success": success, "failure": False, "failure_reason": ""}))
         ])
 
 
@@ -87,7 +87,7 @@ class MockTool(Tool):
         },
     }
 
-    def call(self, input: dict) -> dict:
+    def call(self, input: dict, context: dict | None = None) -> dict:
         return {"result": "executed", "errors": None}
 
 
@@ -97,7 +97,7 @@ class MockTask(Task):
     PROGRESS_SYSTEM_PROMPT = "You are a helpful assistant."
     METADATA_SYSTEM_PROMPT = "Evaluate whether the task is complete."
 
-    def produce_artifact(self, task_inputs: dict, tool_results: list[dict]):
+    def produce_artifact(self, task_inputs: dict, tool_results: list[dict], context: dict | None = None):
         return {"status": "complete", "tool_count": len(tool_results)}
 
 
@@ -107,5 +107,5 @@ class MockFailingTask(Task):
     PROGRESS_SYSTEM_PROMPT = "You are a helpful assistant."
     METADATA_SYSTEM_PROMPT = "Evaluate whether the task is complete."
 
-    def produce_artifact(self, task_inputs: dict, tool_results: list[dict]):
+    def produce_artifact(self, task_inputs: dict, tool_results: list[dict], context: dict | None = None):
         raise RuntimeError("This task always fails")

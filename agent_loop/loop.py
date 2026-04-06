@@ -9,18 +9,33 @@ from .tool import Tool
 
 
 def _parse_metadata(text: str) -> dict:
-    """Parse {progress, success} JSON from an LLM response string."""
+    """Parse metadata JSON from an LLM response string.
+
+    Guarantees the returned dict always contains the standard fields:
+      - progress (str): description of overall progress so far.
+      - success (bool): True when the task is complete.
+      - failure (bool): True when the agent is in an unrecoverable / repeatedly bad state.
+      - failure_reason (str): Human-readable explanation for failure (empty when not failing).
+    Any additional task-defined fields present in the JSON are preserved as-is.
+    """
+    parsed: dict = {}
     try:
-        return json.loads(text.strip())
+        parsed = json.loads(text.strip())
     except json.JSONDecodeError:
-        pass
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group())
-        except json.JSONDecodeError:
-            pass
-    return {"progress": text, "success": False}
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
+            try:
+                parsed = json.loads(match.group())
+            except json.JSONDecodeError:
+                pass
+
+    return {
+        "progress": parsed.get("progress", text if not parsed else ""),
+        "success": bool(parsed.get("success", False)),
+        "failure": bool(parsed.get("failure", False)),
+        "failure_reason": parsed.get("failure_reason", ""),
+        **{k: v for k, v in parsed.items() if k not in ("progress", "success", "failure", "failure_reason")},
+    }
 
 
 def _content_to_dicts(content) -> list[dict]:
@@ -44,10 +59,11 @@ def _content_to_dicts(content) -> list[dict]:
 class AgentLoop:
     """Orchestrates progress/metadata LLM calls around a set of tools and a task."""
 
-    def __init__(self, task: Task, tools: list[Tool], config: AgentLoopConfig):
+    def __init__(self, task: Task, tools: list[Tool], config: AgentLoopConfig, context: dict | None = None):
         self.task = task
         self.tools = {t.name: t for t in tools}
         self.config = config
+        self.context = context
         self._last_turn_tool_errors: list[dict] = []
         self._produce_artifact_error: Optional[str] = None
         self._last_metadata: Optional[dict] = None
@@ -79,11 +95,28 @@ class AgentLoop:
         else:
             tool_section = ""
 
+        # Build the required-fields documentation for the metadata response.
+        standard_fields = [
+            ('progress',       'string',  'Overall description of progress toward the task so far.'),
+            ('success',        'boolean', 'True when the task is fully complete and the artifact satisfies the stopping criteria.'),
+            ('failure',        'boolean', 'True when the agent is stuck in an unrecoverable or repeatedly bad state and cannot make progress.'),
+            ('failure_reason', 'string',  'Human-readable explanation of why the agent considers itself failed. Empty string when failure is false.'),
+        ]
+        extra_fields = [
+            (f['name'], f.get('type', 'string'), f['description'])
+            for f in (self.task.METADATA_FIELDS or [])
+        ]
+        all_fields = standard_fields + extra_fields
+        field_docs = "\n".join(
+            f"  - {name} ({typ}): {desc}" for name, typ, desc in all_fields
+        )
+
         user_msg = (
             f"Task: {self.task.get_prompt()}\n\n"
             f"Stopping criteria: {self.task.STOPPING_CRITERIA}\n\n"
             f"{tool_section}"
-            f"Current artifact:\n{artifact_str}"
+            f"Current artifact:\n{artifact_str}\n\n"
+            f"Respond with a JSON object containing exactly these fields:\n{field_docs}"
         )
         response = self.config.client.messages.create(
             model=self.config.model_metadata,
@@ -109,7 +142,7 @@ class AgentLoop:
                 result = {"errors": f"Unknown tool: {name}"}
             else:
                 try:
-                    result = self.tools[name].call(inputs)
+                    result = self.tools[name].call(inputs, self.context)
                 except Exception as exc:
                     result = {"errors": str(exc)}
 
@@ -141,6 +174,8 @@ class AgentLoop:
         self._last_turn_tool_errors = []
         self._produce_artifact_error = None
         self._last_metadata = None
+
+        terminal_failure = False
 
         for _attempt in range(self.config.max_attempts):
             messages = [{"role": "user", "content": self.task.get_prompt()}]
@@ -179,10 +214,13 @@ class AgentLoop:
                     r for r in return_values if r.get("errors") is not None
                 ]
 
+                # Between-turn hook — e.g. reset scenario state
+                self.task.between_turns(_turn + 1, list(all_tool_results), self.context)
+
                 # Produce artifact
                 try:
                     artifact = self.task.produce_artifact(
-                        self.task.prompt_fields, list(all_tool_results)
+                        self.task.prompt_fields, list(all_tool_results), self.context
                     )
                     self._produce_artifact_error = None
                 except Exception:
@@ -213,9 +251,18 @@ class AgentLoop:
 
                 messages.append({"role": "user", "content": user_content})
 
+                if metadata.get("failure", False):
+                    terminal_failure = True
+                    break
+
                 if metadata.get("success", False):
                     attempt_success = True
                     break
+
+            if terminal_failure:
+                if on_attempt is not None:
+                    on_attempt(False, artifact)
+                break
 
             # Evaluate attempt outcome
             has_artifact = artifact is not None
@@ -229,13 +276,13 @@ class AgentLoop:
             if attempt_success:
                 if on_attempt is not None:
                     on_attempt(True, artifact)
-                self.task.side_effects(artifact)
+                self.task.side_effects(artifact, self.context)
                 return artifact
 
             if self.config.accept_attempts_if_no_error and all_no_errors:
                 if on_attempt is not None:
                     on_attempt(True, artifact)
-                self.task.side_effects(artifact)
+                self.task.side_effects(artifact, self.context)
                 return artifact
 
             if on_attempt is not None:

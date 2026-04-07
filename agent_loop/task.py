@@ -6,9 +6,10 @@ class Task(ABC):
 
     Each task serves two purposes:
     1. **Produce an artifact** — `produce_artifact()` assembles the final result from tool
-       call outputs. The framework calls this after every turn; returning ``None`` or raising
-       an exception causes the attempt to be treated as failed. Exceptions are caught
-       silently — retrieve the traceback via ``AgentLoop.produce_artifact_error()``.
+       call outputs. The framework calls this exactly once, after the metadata evaluator
+       confirms ``success=True`` or ``failure=True``. Returning ``None`` or raising an
+       exception is treated as a failed artifact; exceptions are caught silently — retrieve
+       the traceback via ``AgentLoop.produce_artifact_error()``.
     2. **Apply side effects** — `side_effects()` is called once after `produce_artifact()`
        returns without error and the attempt is accepted. Override it to persist the artifact,
        send notifications, or take any other action that should happen exactly once on success.
@@ -53,6 +54,11 @@ class Task(ABC):
     def produce_artifact(self, task_inputs: dict, tool_results: list[dict], context: dict | None = None):
         """Produce the final artifact from task inputs and tool call results.
 
+        Called exactly once per attempt, after the metadata evaluator returns
+        ``success=True`` or ``failure=True``. At that point ``context`` will contain
+        a ``_terminal_metadata`` key with the final metadata dict so tasks can
+        differentiate success/failure paths if needed.
+
         Args:
             task_inputs: The dict passed to the task constructor (i.e. ``prompt_fields``).
                          Use these to drive artifact construction programmatically — for
@@ -60,6 +66,7 @@ class Task(ABC):
                          other task-level parameter in the returned artifact.
             tool_results: All dicts returned by tool calls so far in this attempt.
             context: Optional context dict from the AgentLoop (e.g. server/bot references).
+                     Contains ``_terminal_metadata`` when called at end-of-attempt.
 
         Returns:
             The final artifact (any JSON-serialisable value), or ``None`` to signal

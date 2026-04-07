@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import traceback
 from typing import Any, Callable, Optional
@@ -68,8 +69,23 @@ class AgentLoop:
         self._produce_artifact_error: Optional[str] = None
         self._last_metadata: Optional[dict] = None
 
-    def _progress_step(self, messages: list[dict]) -> Any:
-        return self.config.client.messages.create(
+    def _write_turn_log(self, turn: int, step: str, direction: str, content: str) -> None:
+        if not self.config.log_dir:
+            return
+        turns_dir = os.path.join(self.config.log_dir, "turns")
+        os.makedirs(turns_dir, exist_ok=True)
+        filename = f"{turn:02d}_{step}_{direction}.txt"
+        with open(os.path.join(turns_dir, filename), "w", encoding="utf-8") as f:
+            f.write(content)
+
+    def _progress_step(self, messages: list[dict], turn: int = 0) -> Any:
+        if self.config.log_dir:
+            self._write_turn_log(turn, "progress", "request", json.dumps({
+                "system": self.task.PROGRESS_SYSTEM_PROMPT,
+                "messages": messages,
+            }, indent=2))
+
+        resp = self.config.client.messages.create(
             model=self.config.model_progress,
             max_tokens=4096,
             system=self.task.PROGRESS_SYSTEM_PROMPT,
@@ -77,7 +93,14 @@ class AgentLoop:
             messages=messages,
         )
 
-    def _metadata_step(self, artifact, tool_results: list[dict] | None = None) -> dict:
+        if self.config.log_dir:
+            self._write_turn_log(turn, "progress", "response", json.dumps(
+                _content_to_dicts(resp.content), indent=2
+            ))
+
+        return resp
+
+    def _metadata_step(self, artifact, tool_results: list[dict] | None = None, turn: int = 0) -> dict:
         if artifact is not None:
             try:
                 artifact_str = json.dumps(artifact, indent=2)
@@ -118,6 +141,12 @@ class AgentLoop:
             f"Current artifact:\n{artifact_str}\n\n"
             f"Respond with a JSON object containing exactly these fields:\n{field_docs}"
         )
+        if self.config.log_dir:
+            self._write_turn_log(turn, "metadata", "request", json.dumps({
+                "system": self.task.METADATA_SYSTEM_PROMPT,
+                "messages": [{"role": "user", "content": user_msg}],
+            }, indent=2))
+
         response = self.config.client.messages.create(
             model=self.config.model_metadata,
             max_tokens=1024,
@@ -125,6 +154,10 @@ class AgentLoop:
             messages=[{"role": "user", "content": user_msg}],
         )
         text = "".join(b.text for b in response.content if hasattr(b, "text"))
+
+        if self.config.log_dir:
+            self._write_turn_log(turn, "metadata", "response", text)
+
         return _parse_metadata(text)
 
     def _execute_tools(self, tool_uses) -> tuple[list[dict], list[dict]]:
@@ -184,8 +217,10 @@ class AgentLoop:
             attempt_success = False
 
             for _turn in range(self.config.max_turns):
+                turn_num = _attempt * self.config.max_turns + _turn + 1
+
                 # Progress step
-                progress_resp = self._progress_step(messages)
+                progress_resp = self._progress_step(messages, turn=turn_num)
 
                 tool_uses = [
                     b for b in progress_resp.content
@@ -228,7 +263,7 @@ class AgentLoop:
                     artifact = None
 
                 # Metadata step
-                metadata = self._metadata_step(artifact, list(all_tool_results))
+                metadata = self._metadata_step(artifact, list(all_tool_results), turn=turn_num)
                 self._last_metadata = metadata
 
                 if on_metadata is not None:

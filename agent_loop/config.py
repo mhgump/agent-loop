@@ -35,3 +35,8 @@ class AgentLoopConfig:
     accept_attempts_if_no_error: bool = False
     """When True, accept an attempt that reaches max_turns if all tools had no errors
     and the task produced an artifact, even if metadata did not return success: true."""
+
+    log_dir: str | None = None
+    """If set, per-turn LLM request/response logs are written to {log_dir}/turns/
+    as NN_progress_request.txt, NN_progress_response.txt, NN_metadata_request.txt,
+    NN_metadata_response.txt."""

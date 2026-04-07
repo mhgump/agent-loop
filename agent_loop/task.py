@@ -80,6 +80,22 @@ class Task(ABC):
             context: Optional context dict from the AgentLoop (e.g. server/bot references).
         """
 
+    def extra_progress_messages(self, context: dict | None = None) -> list[dict]:
+        """Return extra messages to inject at the start of the progress conversation.
+
+        These are prepended before the initial task prompt on every attempt, allowing
+        tasks to provide persistent reference material (API docs, schemas, etc.) that
+        should be visible throughout the entire conversation.
+
+        Must return a valid alternating sequence of user/assistant messages (the Anthropic
+        API requires turns to alternate). Typically one user message followed by one
+        assistant acknowledgment. Defaults to an empty list (no extra context).
+
+        Args:
+            context: Optional context dict from the AgentLoop.
+        """
+        return []
+
     def between_turns(self, turn_number: int, tool_results: list[dict], context: dict | None = None) -> None:
         """Called between each progress turn, after tools have executed.
 

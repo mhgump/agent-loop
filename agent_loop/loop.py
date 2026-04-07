@@ -211,7 +211,8 @@ class AgentLoop:
         terminal_failure = False
 
         for _attempt in range(self.config.max_attempts):
-            messages = [{"role": "user", "content": self.task.get_prompt()}]
+            extra = self.task.extra_progress_messages(self.context)
+            messages = extra + [{"role": "user", "content": self.task.get_prompt()}]
             all_tool_results: list[dict] = []
             artifact = None
             attempt_success = False
@@ -286,12 +287,24 @@ class AgentLoop:
 
                 messages.append({"role": "user", "content": user_content})
 
-                if metadata.get("failure", False):
-                    terminal_failure = True
-                    break
-
-                if metadata.get("success", False):
-                    attempt_success = True
+                if metadata.get("failure", False) or metadata.get("success", False):
+                    # Store terminal metadata in context so produce_artifact can react to it,
+                    # then re-run produce_artifact once to let tasks perform terminal actions
+                    # (e.g. a final clean replay for timing data) before the artifact is returned.
+                    if self.context is not None:
+                        self.context["_terminal_metadata"] = metadata
+                    try:
+                        artifact = self.task.produce_artifact(
+                            self.task.prompt_fields, list(all_tool_results), self.context
+                        )
+                        self._produce_artifact_error = None
+                    except Exception:
+                        self._produce_artifact_error = traceback.format_exc()
+                        artifact = None
+                    if metadata.get("failure", False):
+                        terminal_failure = True
+                    else:
+                        attempt_success = True
                     break
 
             if terminal_failure:

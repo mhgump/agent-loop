@@ -25,10 +25,20 @@ class Task(ABC):
     STOPPING_CRITERIA: str = ""
     """Plain-text description of when the task is considered complete."""
 
-    PROGRESS_SYSTEM_PROMPT: str = ""
+    PROGRESS_SYSTEM_PROMPT: str = (
+        "You are an AI agent working to complete a task using the provided tools.\n"
+        "Each turn, make progress toward the goal by calling one or more tools. "
+        "Keep going until the task is fully done or you determine it cannot be completed. "
+        "Do not ask for clarification — act on your best understanding of the goal."
+    )
     """System prompt for the progress (worker) LLM calls."""
 
-    METADATA_SYSTEM_PROMPT: str = ""
+    METADATA_SYSTEM_PROMPT: str = (
+        "You are evaluating an AI agent's progress on a task. "
+        "Review the full conversation history and return every requested JSON field exactly as specified. "
+        "Be conservative: only set success=true when the task is unambiguously complete, "
+        "and only set failure=true when the agent is definitively stuck with no viable path forward."
+    )
     """System prompt for the metadata (evaluator) LLM calls."""
 
     METADATA_FIELDS: list[dict] = []

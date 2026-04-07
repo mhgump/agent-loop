@@ -32,9 +32,19 @@ class AgentLoopConfig:
     max_turns: int = 10
     """Maximum progress/metadata turns per attempt."""
 
+    max_tokens_progress: int = 16384
+    """Max tokens for progress (worker) calls."""
+
+    max_tokens_metadata: int = 1024
+    """Max tokens for metadata (evaluator) calls."""
+
     accept_attempts_if_no_error: bool = False
     """When True, accept an attempt that reaches max_turns if all tools had no errors
     and the task produced an artifact, even if metadata did not return success: true."""
+
+    cache_control: dict | None = None
+    """If set, applied as cache_control on the system prompt in all LLM calls.
+    Example: {"type": "ephemeral", "ttl": "1h"}"""
 
     log_dir: str | None = None
     """If set, per-turn LLM request/response logs are written to {log_dir}/turns/

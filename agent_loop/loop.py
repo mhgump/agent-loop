@@ -78,17 +78,23 @@ class AgentLoop:
         with open(os.path.join(turns_dir, filename), "w", encoding="utf-8") as f:
             f.write(content)
 
+    def _make_system(self, text: str) -> Any:
+        if self.config.cache_control:
+            return [{"type": "text", "text": text, "cache_control": self.config.cache_control}]
+        return text
+
     def _progress_step(self, messages: list[dict], turn: int = 0) -> Any:
+        system = self._make_system(self.task.PROGRESS_SYSTEM_PROMPT)
         if self.config.log_dir:
             self._write_turn_log(turn, "progress", "request", json.dumps({
-                "system": self.task.PROGRESS_SYSTEM_PROMPT,
+                "system": system,
                 "messages": messages,
             }, indent=2))
 
         resp = self.config.client.messages.create(
             model=self.config.model_progress,
-            max_tokens=4096,
-            system=self.task.PROGRESS_SYSTEM_PROMPT,
+            max_tokens=self.config.max_tokens_progress,
+            system=system,
             tools=[t.to_api_def() for t in self.tools.values()],
             messages=messages,
         )
@@ -100,16 +106,15 @@ class AgentLoop:
 
         return resp
 
-    def _metadata_step(self, messages: list[dict], api_results: list[dict], turn: int = 0) -> dict:
-        """Evaluate the current conversation state and return metadata.
+    def _build_metadata_system_prompt(self) -> str:
+        """Build the full system prompt for the metadata step.
 
-        Shares the same conversation history as the progress step — the evaluator
-        sees the full multi-turn context (tool calls and their results) rather than
-        a summarised artifact. ``api_results`` are the tool_result blocks from the
-        current turn; they are appended alongside the evaluation request so the
-        evaluator sees the latest tool outputs without polluting the real messages list.
+        Combines the task's base ``METADATA_SYSTEM_PROMPT`` with the response format
+        instructions (required JSON fields, their types, and descriptions) and the
+        stopping criteria.  Placing these static instructions in the system prompt
+        rather than appending them to every conversation turn means they occupy a
+        stable prefix that the API can cache, avoiding repeated full-input-token charges.
         """
-        # Build the required-fields documentation for the metadata response.
         standard_fields = [
             ('progress',       'string',  'Overall description of progress toward the task so far.'),
             ('success',        'boolean',
@@ -130,16 +135,35 @@ class AgentLoop:
         field_docs = "\n".join(
             f"  - {name} ({typ}): {desc}" for name, typ, desc in all_fields
         )
-
-        eval_text = (
+        return (
+            f"{self.task.METADATA_SYSTEM_PROMPT}\n\n"
             f"Task: {self.task.get_prompt()}\n\n"
             f"Stopping criteria: {self.task.STOPPING_CRITERIA}\n\n"
-            f"Evaluate the conversation above and respond with a JSON object containing "
-            f"exactly these fields:\n{field_docs}\n\n"
+            f"When asked to evaluate, respond with a JSON object containing exactly these fields:\n"
+            f"{field_docs}\n\n"
             f"Be conservative: prefer continuing the conversation over declaring success or "
             f"failure prematurely. Only set success=true or failure=true when you are fully "
             f"confident — if in doubt, leave both false."
         )
+
+    def _metadata_step(self, messages: list[dict], api_results: list[dict], turn: int = 0) -> dict:
+        """Evaluate the current conversation state and return metadata.
+
+        Shares the same conversation history as the progress step — the evaluator
+        sees the full multi-turn context (tool calls and their results) rather than
+        a summarised artifact. ``api_results`` are the tool_result blocks from the
+        current turn; they are appended alongside the evaluation request so the
+        evaluator sees the latest tool outputs without polluting the real messages list.
+
+        Response format instructions live in the system prompt (see
+        ``_build_metadata_system_prompt``) so the static prefix can be cached by the
+        API across turns, reducing input-token costs.
+        """
+        metadata_system = self._make_system(self._build_metadata_system_prompt())
+
+        # Per-turn eval trigger — intentionally minimal so only the growing conversation
+        # history is uncached, not the format instructions (which are in the system prompt).
+        eval_text = "Evaluate the conversation above."
 
         # Combine tool results (if any) with the evaluation request into a single user
         # message so the conversation remains valid (tool_result blocks must immediately
@@ -153,14 +177,14 @@ class AgentLoop:
 
         if self.config.log_dir:
             self._write_turn_log(turn, "metadata", "request", json.dumps({
-                "system": self.task.METADATA_SYSTEM_PROMPT,
+                "system": metadata_system,
                 "messages": metadata_messages,
             }, indent=2))
 
         response = self.config.client.messages.create(
             model=self.config.model_metadata,
-            max_tokens=1024,
-            system=self.task.METADATA_SYSTEM_PROMPT,
+            max_tokens=self.config.max_tokens_metadata,
+            system=metadata_system,
             messages=metadata_messages,
         )
         text = "".join(b.text for b in response.content if hasattr(b, "text"))
